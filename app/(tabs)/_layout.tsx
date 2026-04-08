@@ -1,12 +1,64 @@
+import { tabs } from "@/constants/data";
+import { colors, components } from "@/constants/theme";
+import clsx from "clsx";
 import { Tabs } from "expo-router";
+import { Image, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+const tabBar = components.tabBar; // Destructure tabBar properties for easier access
 
 const TabLayout = () => {
-  <Tabs screenOptions={{ headerShown: false }}>
-    <Tabs.Screen name="index" options={{ title: "Home" }} />
-    <Tabs.Screen name="subscriptions" options={{ title: "Subscriptions" }} />
-    <Tabs.Screen name="insights" options={{ title: "Insights" }} />
-    <Tabs.Screen name="settings" options={{ title: "Settings" }} />
-  </Tabs>;
+  const insets = useSafeAreaInsets(); // Get safe area insets for proper padding
+
+  const TabIcon = ({ focused, icon }: TabIconProps) => {
+    return (
+      <View className="tabs-icon">
+        <View className={clsx("tabs-pill", focused && "tabs-active")}>
+          <Image source={icon} resizeMode="contain" className="tabs-glyph" />
+        </View>
+      </View>
+    );
+  };
+  return (
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarShowLabel: false,
+        tabBarStyle: {
+          position: "absolute",
+          bottom: Math.max(insets.bottom, tabBar.horizontalInset), // Ensure minimum horizontal inset
+          height: tabBar.height,
+          marginHorizontal: tabBar.horizontalInset,
+          borderRadius: tabBar.radius,
+          backgroundColor: colors.primary,
+          borderTopWidth: 0,
+          elevation: 0,
+          //backgroundColor: "transparent", // Use transparent background to show custom styling
+        },
+        tabBarItemStyle: {
+          paddingVertical: tabBar.height / 2 - tabBar.iconFrame / 1.6, // Center the icon vertically
+        },
+        tabBarIconStyle: {
+          width: tabBar.iconFrame,
+          height: tabBar.iconFrame,
+          alignItems: "center",
+        },
+      }}
+    >
+      {tabs.map((tab) => (
+        <Tabs.Screen
+          key={tab.name}
+          name={tab.name}
+          options={{
+            title: tab.title,
+            tabBarIcon: ({ focused }) => (
+              <TabIcon focused={focused} icon={tab.icon} />
+            ),
+          }}
+        />
+      ))}
+    </Tabs>
+  );
 };
 
 export default TabLayout;
