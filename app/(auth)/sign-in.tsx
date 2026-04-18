@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { type Href, Link, useRouter } from "expo-router";
 import { styled } from "nativewind";
 import React, { useRef, useState } from "react";
+import { usePostHog } from "posthog-react-native";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -23,6 +24,7 @@ const isValidEmail = (v: string) =>
 export default function SignIn() {
   const { signIn, errors, fetchStatus } = useSignIn();
   const router = useRouter();
+  const posthog = usePostHog();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -61,6 +63,13 @@ export default function SignIn() {
     if (error) return;
 
     if (signIn.status === "complete") {
+      const userId = signIn.createdSessionId ?? email.trim();
+      posthog.identify(userId, {
+        $set: { email: email.trim() },
+        $set_once: { first_sign_in_date: new Date().toISOString() },
+      });
+      posthog.capture("user_signed_in", { email: email.trim() });
+
       await signIn.finalize({
         navigate: ({ decorateUrl }) => {
           const url = decorateUrl("/");

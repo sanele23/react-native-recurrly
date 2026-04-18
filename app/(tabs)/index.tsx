@@ -16,6 +16,7 @@ import { styled } from "nativewind";
 import { useState } from "react";
 import { FlatList, Image, Text, View } from "react-native";
 import { SafeAreaView as RNSafeAreaView } from "react-native-safe-area-context";
+import { usePostHog } from "posthog-react-native";
 
 const SafeAreaView = styled(RNSafeAreaView); // Create a styled version of SafeAreaView for consistent styling
 
@@ -23,6 +24,7 @@ export default function App() {
   const [expandedSubscriptionId, setExpandedSubscriptionId] = useState<
     string | null
   >(null);
+  const posthog = usePostHog();
   return (
     <SafeAreaView className="flex-1 bg-background p-5">
       <FlatList
@@ -73,11 +75,19 @@ export default function App() {
           <SubscriptionCard
             {...item}
             expanded={expandedSubscriptionId === item.id}
-            onPress={() =>
+            onPress={() => {
+              const isExpanding = expandedSubscriptionId !== item.id;
               setExpandedSubscriptionId((currentId) =>
                 currentId === item.id ? null : item.id,
-              )
-            }
+              );
+              if (isExpanding) {
+                posthog.capture("subscription_card_expanded", {
+                  subscription_id: item.id,
+                  subscription_name: item.name,
+                  subscription_billing: item.billing,
+                });
+              }
+            }}
           />
         )}
         extraData={expandedSubscriptionId}

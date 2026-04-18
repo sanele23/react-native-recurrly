@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { type Href, Link, useRouter } from "expo-router";
 import { styled } from "nativewind";
 import React, { useRef, useState } from "react";
+import { usePostHog } from "posthog-react-native";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -49,6 +50,7 @@ const STRENGTH_COLOR: Record<Strength["label"], string> = {
 export default function SignUp() {
   const { signUp, errors, fetchStatus } = useSignUp();
   const router = useRouter();
+  const posthog = usePostHog();
 
   // ── Form state ──────────────────────────────────────────────────────────
   const [email, setEmail] = useState("");
@@ -114,6 +116,13 @@ export default function SignUp() {
     await signUp.verifications.verifyEmailCode({ code: code.trim() });
 
     if (signUp.status === "complete") {
+      const userId = signUp.createdUserId ?? email.trim();
+      posthog.identify(userId, {
+        $set: { email: email.trim() },
+        $set_once: { sign_up_date: new Date().toISOString() },
+      });
+      posthog.capture("user_signed_up", { email: email.trim() });
+
       await signUp.finalize({
         navigate: ({ decorateUrl }) => {
           const url = decorateUrl("/");
