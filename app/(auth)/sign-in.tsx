@@ -64,7 +64,9 @@ export default function SignIn() {
       await signIn.finalize({
         navigate: ({ decorateUrl }) => {
           const url = decorateUrl("/");
-          if (!url.startsWith("http")) {
+          if (url.startsWith("http")) {
+            window.location.href = url;
+          } else {
             router.replace(url as Href);
           }
         },

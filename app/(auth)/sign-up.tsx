@@ -117,7 +117,9 @@ export default function SignUp() {
       await signUp.finalize({
         navigate: ({ decorateUrl }) => {
           const url = decorateUrl("/");
-          if (!url.startsWith("http")) {
+          if (url.startsWith("http")) {
+            window.location.href = url;
+          } else {
             router.replace(url as Href);
           }
         },
@@ -218,9 +220,10 @@ export default function SignUp() {
                   <Text className="auth-link-copy">Wrong email?</Text>
                   <Pressable
                     hitSlop={8}
-                    onPress={() => {
+                    onPress={async () => {
                       setCode("");
                       setCodeTouched(false);
+                      if (signUp) await signUp.reset();
                     }}
                   >
                     <Text className="auth-link"> Go back</Text>
