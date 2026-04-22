@@ -125,12 +125,7 @@ export default function SignUp() {
 
       await signUp.finalize({
         navigate: ({ decorateUrl }) => {
-          const url = decorateUrl("/");
-          if (url.startsWith("http")) {
-            window.location.href = url;
-          } else {
-            router.replace(url as Href);
-          }
+          router.replace(decorateUrl("/") as Href);
         },
       });
     }

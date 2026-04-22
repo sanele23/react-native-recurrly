@@ -21,18 +21,43 @@ const SafeAreaView = styled(RNSafeAreaView);
 const isValidEmail = (v: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
+type MFAStrategy = "totp" | "phone_code" | "email_code" | "backup_code";
+
+function mfaSubtitle(strategy: MFAStrategy): string {
+  switch (strategy) {
+    case "totp":
+      return "Enter the 6-digit code from your authenticator app.";
+    case "phone_code":
+      return "Enter the code sent to your phone number.";
+    case "email_code":
+      return "Enter the code sent to your email address.";
+    case "backup_code":
+      return "Enter one of your saved backup codes.";
+  }
+}
+
 export default function SignIn() {
   const { signIn, errors, fetchStatus } = useSignIn();
   const router = useRouter();
   const posthog = usePostHog();
 
+  // ── Password step state ──────────────────────────────────────────────────
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [touched, setTouched] = useState({ email: false, password: false });
+  const [generalError, setGeneralError] = useState<string | null>(null);
+
+  // ── MFA step state ───────────────────────────────────────────────────────
+  const [isMFAStep, setIsMFAStep] = useState(false);
+  const [mfaStrategy, setMfaStrategy] = useState<MFAStrategy | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaCodeTouched, setMfaCodeTouched] = useState(false);
 
   const passwordRef = useRef<TextInput>(null);
+  const mfaCodeRef = useRef<TextInput>(null);
 
+  // ── Validation ───────────────────────────────────────────────────────────
   const emailErr =
     touched.email && !isValidEmail(email)
       ? "Enter a valid email address"
@@ -42,47 +67,232 @@ export default function SignIn() {
       ? "Password must be at least 8 characters"
       : null;
 
-  // Surface Clerk's server-side field errors
   const clerkEmailErr = errors?.fields?.identifier?.message ?? null;
   const clerkPasswordErr = errors?.fields?.password?.message ?? null;
 
   const canSubmit =
     isValidEmail(email) && password.length >= 8 && fetchStatus !== "fetching";
+  const canVerifyMFA =
+    mfaCode.trim().length > 0 && fetchStatus !== "fetching";
 
+  // ── Finalize helper ──────────────────────────────────────────────────────
+  const finalize = async () => {
+    const userId = signIn.createdSessionId ?? email.trim();
+    posthog.identify(userId, {
+      $set: { email: email.trim() },
+      $set_once: { first_sign_in_date: new Date().toISOString() },
+    });
+    posthog.capture("user_signed_in", { email: email.trim() });
+
+    const { error: finalizeError } = await signIn.finalize({
+      navigate: ({ decorateUrl }) => {
+        router.replace(decorateUrl("/") as Href);
+      },
+    });
+    if (finalizeError) {
+      setGeneralError(finalizeError.message ?? "Sign in failed. Please try again.");
+    }
+  };
+
+  // ── Password submit ──────────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (!canSubmit) return;
 
-    // Mark both fields touched so any validation errors show
     setTouched({ email: true, password: true });
+    setGeneralError(null);
 
     const { error } = await signIn.password({
       emailAddress: email.trim(),
       password,
     });
 
-    if (error) return;
+    if (error) {
+      setGeneralError(error.message ?? "Sign in failed. Please try again.");
+      return;
+    }
 
     if (signIn.status === "complete") {
-      const userId = signIn.createdSessionId ?? email.trim();
-      posthog.identify(userId, {
-        $set: { email: email.trim() },
-        $set_once: { first_sign_in_date: new Date().toISOString() },
-      });
-      posthog.capture("user_signed_in", { email: email.trim() });
+      await finalize();
+      return;
+    }
 
-      await signIn.finalize({
-        navigate: ({ decorateUrl }) => {
-          const url = decorateUrl("/");
-          if (url.startsWith("http")) {
-            window.location.href = url;
-          } else {
-            router.replace(url as Href);
-          }
-        },
-      });
+    if (signIn.status === "needs_second_factor") {
+      // Pick the best available second factor
+      const factors = signIn.supportedSecondFactors ?? [];
+      const preferred =
+        factors.find((f) => f.strategy === "totp") ??
+        factors.find((f) => f.strategy === "phone_code") ??
+        factors.find((f) => f.strategy === "email_code") ??
+        factors.find((f) => f.strategy === "backup_code") ??
+        factors[0];
+
+      if (!preferred) {
+        setGeneralError("No second factor available. Please contact support.");
+        return;
+      }
+
+      const strategy = preferred.strategy as MFAStrategy;
+      setMfaStrategy(strategy);
+
+      // For code-delivery factors, send the code first
+      if (strategy === "phone_code") {
+        const { error: sendErr } = await signIn.mfa.sendPhoneCode();
+        if (sendErr) {
+          setGeneralError(sendErr.message ?? "Failed to send verification code.");
+          return;
+        }
+      } else if (strategy === "email_code") {
+        const { error: sendErr } = await signIn.mfa.sendEmailCode();
+        if (sendErr) {
+          setGeneralError(sendErr.message ?? "Failed to send verification code.");
+          return;
+        }
+      }
+
+      setIsMFAStep(true);
+      return;
+    }
+
+    setGeneralError("Unexpected sign-in state. Please try again.");
+  };
+
+  // ── MFA submit ───────────────────────────────────────────────────────────
+  const handleMFA = async () => {
+    if (!canVerifyMFA || !mfaStrategy) return;
+
+    setMfaCodeTouched(true);
+    setGeneralError(null);
+
+    const code = mfaCode.trim();
+    let result: { error: { message?: string } | null };
+
+    switch (mfaStrategy) {
+      case "totp":
+        result = await signIn.mfa.verifyTOTP({ code });
+        break;
+      case "phone_code":
+        result = await signIn.mfa.verifyPhoneCode({ code });
+        break;
+      case "email_code":
+        result = await signIn.mfa.verifyEmailCode({ code });
+        break;
+      case "backup_code":
+        result = await signIn.mfa.verifyBackupCode({ code });
+        break;
+    }
+
+    if (result.error) {
+      setGeneralError(result.error.message ?? "Invalid code. Please try again.");
+      return;
+    }
+
+    if (signIn.status === "complete") {
+      await finalize();
     }
   };
 
+  // ── MFA screen ───────────────────────────────────────────────────────────
+  if (isMFAStep && mfaStrategy) {
+    return (
+      <SafeAreaView className="auth-safe-area">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          className="flex-1"
+        >
+          <ScrollView
+            className="auth-scroll"
+            contentContainerClassName="auth-content"
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Brand */}
+            <View className="auth-brand-block">
+              <View className="auth-logo-wrap">
+                <View className="auth-logo-mark">
+                  <Text className="auth-logo-mark-text">R</Text>
+                </View>
+                <View>
+                  <Text className="auth-wordmark">Recurly</Text>
+                  <Text className="auth-wordmark-sub">Smart Billing</Text>
+                </View>
+              </View>
+
+              <Text className="auth-title">Two-step verification</Text>
+              <Text className="auth-subtitle">{mfaSubtitle(mfaStrategy)}</Text>
+            </View>
+
+            {/* MFA card */}
+            <View className="auth-card">
+              <View className="auth-form">
+                <View className="auth-field">
+                  <Text className="auth-label">Verification code</Text>
+                  <TextInput
+                    ref={mfaCodeRef}
+                    className={clsx(
+                      "auth-input",
+                      mfaCodeTouched && !mfaCode.trim() && "auth-input-error",
+                    )}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType={
+                      mfaStrategy === "backup_code" ? "default" : "number-pad"
+                    }
+                    returnKeyType="done"
+                    textContentType="oneTimeCode"
+                    value={mfaCode}
+                    placeholder={
+                      mfaStrategy === "backup_code"
+                        ? "Enter backup code"
+                        : "Enter 6-digit code"
+                    }
+                    placeholderTextColor="rgba(8,17,38,0.35)"
+                    onChangeText={setMfaCode}
+                    onBlur={() => setMfaCodeTouched(true)}
+                    onSubmitEditing={handleMFA}
+                  />
+                  {mfaCodeTouched && !mfaCode.trim() && (
+                    <Text className="auth-error">Enter your verification code</Text>
+                  )}
+                </View>
+
+                {generalError && (
+                  <Text className="auth-error text-center">{generalError}</Text>
+                )}
+
+                <Pressable
+                  className={clsx(
+                    "auth-button",
+                    !canVerifyMFA && "auth-button-disabled",
+                  )}
+                  onPress={handleMFA}
+                  disabled={!canVerifyMFA}
+                >
+                  <Text className="auth-button-text">
+                    {fetchStatus === "fetching" ? "Verifying…" : "Verify"}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  className="auth-link-row"
+                  onPress={() => {
+                    setIsMFAStep(false);
+                    setMfaCode("");
+                    setMfaCodeTouched(false);
+                    setGeneralError(null);
+                  }}
+                  hitSlop={8}
+                >
+                  <Text className="auth-link">← Back to sign in</Text>
+                </Pressable>
+              </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Password screen ──────────────────────────────────────────────────────
   return (
     <SafeAreaView className="auth-safe-area">
       <KeyboardAvoidingView
@@ -164,7 +374,6 @@ export default function SignIn() {
                       setTouched((t) => ({ ...t, password: true }))
                     }
                     onSubmitEditing={handleSubmit}
-                    // Extra right padding to avoid text overlapping the toggle
                     style={{ paddingRight: 60 }}
                   />
                   <Pressable
@@ -189,6 +398,11 @@ export default function SignIn() {
                   </Text>
                 )}
               </View>
+
+              {/* General error */}
+              {generalError && (
+                <Text className="auth-error text-center">{generalError}</Text>
+              )}
 
               {/* Submit */}
               <Pressable
